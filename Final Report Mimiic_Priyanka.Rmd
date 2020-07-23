@@ -1,0 +1,261 @@
+---
+title: "Mimiic_Final_Report1"
+author: "Priyanka Sharma"
+date: "5/15/2020"
+output: html_document
+---
+**Setting up Enviroment**
+```{r}
+library(caret)
+library(dplyr)
+library(e1071)
+library(imputeMissings)
+library(plyr)
+library(rpart.plot)
+library(pROC)
+library(randomForest)
+
+setwd("/Users/priyankasharma/Desktop")
+df <- read.csv(file="data_pneumoniacohort.csv", header=TRUE, stringsAsFactors = TRUE)
+```
+
+**Reading in Pnemonia Dataset & summary stat intial EDA**
+
+-- Note: Many vars have large amount of NA's
+```{r}
+summary(df)
+```
+
+**Data cleaning**
+- Dropping variables with >50% NAs
+- Dropping variables that do not have significance like id's 
+```{r}
+df1<- select(df, - c('X','subject_id','hadm_id','crp', 'total_protein', 'peak_flow', 'o2_saturation', 'albumin_urine','religion'
+                     ,"short_title", "long_title","smoking_history", "discharge_location", 'diagnosis', 'icd9_list'
+                     ,'firstcareunits','max_bp', 'total_protein','hb','height','weight','comorbidities',
+                     'creatinine_urine',"urea_nitrogen"))
+```
+Age> 300
+```{r}
+df1$age[df1$age >= 300] <- NA
+```
+Creating 5 Ethincies from 35
+```{r}
+levels(df1$ethnicity)[1:2] <- "AMERICAN INDIAN/ALASKA NATIVE"  
+levels(df1$ethnicity)[2:8 ] <- "ASIAN"
+levels(df1$ethnicity)[3:6 ] <- "BLACK/AFRICAN AMERICAN"
+levels(df1$ethnicity)[4:12 ] <- "HISPANIC/LATINO"
+levels(df1$ethnicity)[c(5,6,8,9:12) ] <- "OTHER"
+levels(df1$ethnicity)[7:11 ] <- "WHITE"
+levels(df1$ethnicity)[6 ] <- "OTHER"
+```
+
+Creatin Length Stay variable
+```{r}
+df1$dischtime <- as.POSIXct(df1$dischtime)
+df1$first_admittime <- as.POSIXct(df1$first_admittime)
+df1$length_of_stay <- round(difftime(df1$dischtime, df1$first_admittime, units =c('days')))
+df1$length_of_stay <- as.numeric(df1$length_of_stay)
+```
+
+Drop Rest of clolumns used in calculations
+```{r}
+df1<- select(df1, - c('dischtime', 'first_admittime','icustayid'))
+```
+
+Typecast variables to numeric or factor 
+````{r}
+df1$albumin <- as.numeric(df1$albumin)
+df1$platelet_count <- as.numeric(df$platelet_count)
+df1$expire_flag <- as.factor(df1$expire_flag)
+```
+
+Dropping leftover NA's
+```{r}
+df1<- na.omit(df1)
+```
+
+**Visualizations**
+
+-- Distributions show that more there are more patients who died in this dataset. 
+-- in Age vs Dead or alive plot we see those who dies have higher median age
+-- In the Albumin, lenght of stay and platele count vs Dead or Alive plots we see that there is minimal diffference in quantile values between dead or alive 
+```{r}
+ggplot(data = df1, mapping =  aes(expire_flag, fill=expire_flag)) + geom_bar() + labs(title = "Distribution of Survived (0) vs Deaths(1)", x="Survived(0) or Dead(1)" , y ='Count' )
+ ggplot(data = df1, mapping =  aes(expire_flag,age, fill= expire_flag)) + geom_boxplot() + labs(title = 'Boxplot Distribution of Age in Survived(0) vs Dead(1)', x="Survived(0) or Dead(1)", y = 'Age(yrs)')
+ 
+ ggplot(data = df1, mapping = aes(expire_flag, albumin, fill= expire_flag ))+ geom_boxplot()+ labs(title = 'Boxplot Distribution of Albumin in Survived(0) vs Dead(1)', x="Survived(0) or Dead(1)", y = 'Albumin')
+ ggplot(data = df1, mapping = aes(expire_flag, platelet_count , fill= expire_flag))+ geom_boxplot()+ labs(title = 'Boxplot Distribution of Platelet Count in Survived(0) vs Dead(1)', x="Survived(0) or Dead(1)", y = 'Platelet Count')
+ ggplot(data = df1, mapping = aes(expire_flag, length_of_stay , fill= expire_flag)) + ylim(0, 40)+geom_boxplot() + labs(title = 'Boxplot Distribution of Length of Stay in Survived(0) vs Dead(1)', x="Survived(0) or Dead(1)", y = 'Length of Stay (days)')
+ ggplot(data = df1, mapping = aes(admission_type, fill= expire_flag))+ geom_bar() + labs(title = 'Distribution of Admission Type Colored by Survived(0) vs Dead(1)', x= 'Admission Type', y= 'Count')
+ ggplot(data = df1, mapping = aes(ethnicity, fill= expire_flag))+ geom_bar()+ labs(title = 'Distribution of Ethnicity Colored by Survived(0) vs Dead(1)', x= 'Ethnicity', y= 'Count')
+ ggplot(data = df1, mapping = aes(insurance, fill= expire_flag))+ geom_bar()+ labs(title = 'Distribution of Insurance Colored by Survived(0) vs Dead(1)', x= 'Insurance', y= 'Count')
+
+```
+
+**Random Forest Model**
+```{r}
+set.seed(100)
+intrain <- createDataPartition(y = df1$expire_flag, p= 0.7, list = FALSE)
+training <- df1[intrain,]
+testing <- df1[-intrain,]
+dim(intrain); dim(training); dim(testing)
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE,# Use AUC to pick the best model
+                       method = "repeatedcv", number = 5, repeats = 3)
+
+levels(training$expire_flag) <- c('Alive', "Dead")
+levels(testing$expire_flag) <- c("Alive", "Dead")
+
+
+model_rf <- train(expire_flag ~., data = training, method = "rf",
+                  trControl=trctrl,
+                  preProcess = c("center", "scale"),
+                  metric="ROC",
+                  tuneLength = 10)
+model_rf
+
+test_pred <- predict(model_rf, newdata = testing)
+
+confusionMatrix(test_pred, factor(testing$expire_flag))
+         
+
+plot(model_rf)
+rfProbs <- predict(model_rf, testing, type = "prob")
+rfROC <- roc(testing$expire_flag, rfProbs[, "Dead"])
+plot.roc(rfROC, print.auc=TRUE, legacy.axes=TRUE)
+```
+
+**SVM LINEAR**
+```{r}
+set.seed(3233)
+intrain <- createDataPartition(y = df1$expire_flag, p= 0.7, list = FALSE)
+training <- df1[intrain,]
+testing <- df1[-intrain,]
+dim(intrain); dim(training); dim(testing)
+
+training$expire_flag= factor(training$expire_flag)
+testing$expire_flag= factor(testing$expire_flag)
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE, savePredictions = T, method = "cv", number = 3)
+grid <- expand.grid(C = c(0.005,0.01, 0.05, 0.1, 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2,5))
+set.seed(3233)
+
+levels(training$expire_flag) <- c('Alive', "Dead")
+levels(testing$expire_flag) <- c("Alive", "Dead")
+
+svm_Linear_Grid <- train(expire_flag ~., data = training, method = "svmLinear",
+                         trControl=trctrl,
+                         preProcess = c("center", "scale"),
+                         tuneGrid = grid,
+                         tuneLength = 4) 
+
+svm_Linear_Grid 
+
+plot(svm_Linear_Grid)
+test_pred <- predict(svm_Linear_Grid, newdata = testing)
+confusionMatrix(factor(testing$expire_flag), test_pred) 
+svm_LinearProbs <- predict(svm_Linear_Grid, testing, type = "prob")
+svm_LinearROC <- roc(testing$expire_flag, svm_LinearProbs[, "Dead"])
+plot.roc(svm_LinearROC, print.auc=TRUE, legacy.axes=TRUE)
+
+```
+**SVM POLY**
+```{r}
+set.seed(3233)
+intrain <- createDataPartition(y = df1$expire_flag, p= 0.7, list = FALSE)
+training <- df1[intrain,]
+testing <- df1[-intrain,]
+dim(intrain); dim(training); dim(testing)
+
+levels(training$expire_flag) <- c('Alive', "Dead")
+levels(testing$expire_flag) <- c("Alive", "Dead")
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE, savePredictions = T, method = "cv", number = 3)
+
+svm_Poly <- train(
+  expire_flag ~., data = training, method = "svmPoly",
+  trControl = trctrl,
+  preProcess = c("center","scale"),
+  metric="ROC",
+  tuneLength = 4)
+
+svm_Poly
+plot(svm_Poly)
+
+
+test_pred <- predict(svm_Poly, newdata = testing)
+confusionMatrix(factor(testing$expire_flag), test_pred) 
+svm_PolyProbs <- predict(svm_Poly, testing, type = "prob")
+svm_PolyROC <- roc(testing$expire_flag, svm_PolyProbs[, "Dead"])
+plot.roc(svm_PolyROC, print.auc=TRUE, legacy.axes=TRUE)
+```
+
+**SVM RBF**
+```{r}
+set.seed(3233)
+intrain <- createDataPartition(y = df1$expire_flag, p= 0.7, list = FALSE)
+training <- df1[intrain,]
+testing <- df1[-intrain,]
+dim(intrain); dim(training); dim(testing)
+
+levels(training$expire_flag) <- c('Alive', "Dead")
+levels(testing$expire_flag) <- c("Alive", "Dead")
+
+trctrl <- trainControl(summaryFunction=twoClassSummary,classProbs = TRUE, savePredictions = T, method = "cv", number = 3)
+
+svm_rbf <- train(
+  expire_flag ~., data = training, method = "svmRadial",
+  trControl = trctrl,
+  preProcess = c("center","scale"),
+  metric="ROC",
+  tuneLength = 4)
+
+svm_rbf
+plot(svm_rbf)
+
+
+test_pred <- predict(svm_rbf, newdata = testing)
+confusionMatrix(factor(testing$expire_flag), test_pred)
+
+svm_rbfProbs <- predict(svm_rbf, testing, type = "prob")
+svm_rbfROC <- roc(testing$expire_flag, svm_rbfProbs[, "Dead"])
+plot.roc(svm_rbfROC, print.auc=TRUE, legacy.axes=TRUE)
+
+```
+
+**Decision Tree***
+```{r}
+set.seed(3233)
+intrain <- createDataPartition(y = df1$expire_flag, p= 0.7, list = FALSE)
+training <- df1[intrain,]
+testing <- df1[-intrain,]
+dim(intrain); dim(training); dim(testing)
+
+levels(training$expire_flag) <- c('Alive', "Dead")
+levels(testing$expire_flag) <- c("Alive", "Dead")
+
+
+dtree_fit <- train(expire_flag ~., data = training, method = "rpart")
+
+
+test_pred <- predict(dtree_fit, newdata = testing)
+
+confusionMatrix(factor(testing$expire_flag), test_pred)
+
+prp(dtree_fit$finalModel, box.palette = "Reds")
+dtreeProbs <- predict(dtree_fit, testing, type = "prob")
+dtreeROC <- roc(testing$expire_flag, dtreeProbs[, "Dead"])
+plot.roc(dtreeROC, print.auc=TRUE, legacy.axes=TRUE)  
+```
+**Conclusions**
+-- AUCS: svmRBF = .679, svmPoly = .690, svmLinear = .690, Random Forest= .684, Decision Tree = .684
+-- My worst model is : Decision tree with AUC of .646 
+-- My best model is: SVM Polynomial with AUC of .690 ( Even though SVM linear had same AUC, SVMPoly is best because its sensitivity and specificity were higher than SVM linear)
+-- In general the models were bad at identifying true positives (alive) as seen in the confusion matrices. This maybe due to the higher distribution of dead patiets in the dataset along with the low number of patient entires. 
+--- When conducting EDA I had to drop most variables that I beleive would have improved prediction due to 50% to 80% NA's. For future work to make the model better, I think adding more lab variables will help the model. The currentl model only has two variables, and as a previous clinician, I think that lab test have the most power to predict mortality. 
+
+
+
+
+
